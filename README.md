@@ -197,12 +197,38 @@ the result is conservative.
 > something conditioned on it.
 
 > [!WARNING]
-> One thing this does **not** yet show: whether the transition token improves map quality. The
+> One thing this does **not** show: whether the transition token improves map quality. The
 > teacher-forced placement metric cannot answer it - that metric feeds the model the true prefix,
 > which for this grammar includes the transition token itself, handing it most of the answer.
 > Measured: knowing the token drops Y's entropy from 2.509 bits to 1.049. Any cross-grammar
-> comparison on that metric is unfair by construction, so the open question is being settled by
-> end-to-end generation instead.
+> comparison on that metric is unfair by construction.
+
+### First look at generated maps
+
+Generating end-to-end sidesteps that problem - the model has to emit its own transition tokens
+rather than being handed them. Two models of similar training age, one with the token and one
+without, generating for four held-out songs they had never trained on:
+
+| | with token | without token | human | shipping model (20x the training) |
+|:--|:--:|:--:|:--:|:--:|
+| median aim speed | **10.8 - 23.8** | 20.7 - 33.2 | 16.66 | - |
+| 99th-pct aim speed | 1,598 - 2,264 | 2,502 - 2,801 | 70.50 | 33 - 47 |
+| centre-cell share | 8.6 - 26.8% | 1.0 - 2.7% | 4.9% | 0.9 - 5.6% |
+
+Two readings, and the first one is a correction:
+
+**The wild aim speeds are immaturity, not the token.** At roughly 5% of a full training run both
+models demand ~35x the human 99th-percentile aim speed, and the one *without* the token is worse
+on every song. The shipping model needed its full run to settle below the human value. A single
+arm would have looked damning; the control is what makes it readable.
+
+**The token does appear to do its job.** Its median aim speed brackets the human figure while the
+model without it overshoots on all four songs - which is exactly the defect the token was added
+to attack. It overcorrects toward the middle of the grid (a centre-cell share well above human,
+where the other model under-uses the centre), and that is the kind of bias the inference-time
+steering knob exists to trim.
+
+Both models are far from converged, so this is a direction rather than a verdict.
 
 ## 🗺️ Roadmap
 
@@ -210,10 +236,12 @@ the result is conservative.
 - [ ] **KV-cache decoding** for faster generation - the RoPE decoder is the groundwork
 - [x] **Coordinate-refinement head** - a regression sub-bin offset for beyond-grid precision
 - [x] **Rest/gap handling** - an inference-time onset gate so quiet sections stay empty
-- [x] **Explicit transition modelling** - built; trains stably now, quality benefit unproven
+- [x] **Explicit transition modelling** - built; trains stably now, early generation looks right
 - [x] **Normalised attention scores** - fixes the failure above; 25k steps clean, best loss yet
-- [ ] **Corpus label audit as a gate** - the placeholder-rating bug should have been caught by a
-      check, not by a week of divergences
+- [x] **Corpus label audit as a gate** - the screen that catches unplayable maps now runs as part
+      of importing, instead of being something someone remembers to do
+- [ ] **A full run of the fixed recipe** - in progress; the first one that gets to answer whether
+      any of this beats the old champion
 
 > [!NOTE]
 > Three experiments failed to beat the v7 recipe, each differently: **v8** (architecture changes)
