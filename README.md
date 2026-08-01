@@ -144,29 +144,65 @@ up makes the real correlation obvious, and it is not the grammar:
 | transition-token run | yes | yes | 0.15 | turned ~22.5k |
 | control run | no | yes | 0.15 | turned ~17k |
 
-So the mechanism is real - degenerate cross-attention on Y positions, growing until the
-gradients follow - but the *trigger* is still unidentified, and the corpus and regularisation
-changes are the remaining suspects. A run without the added community maps is testing that now.
+### There were two causes, not one
 
-Meanwhile the cause-agnostic fix is working. RMS-normalising the query and key vectors in the
-decoder's cross-attention bounds the score by `sqrt(head_dim)` no matter how large the
-projections grow. In training it holds exactly:
+Five controlled runs, each changing one thing, resolved it. Read down the columns:
 
-| | cross-attention logits | validation at 15k steps |
+| run | transition token | corpus labels | normalised attention | outcome |
+|:--|:--:|:--:|:--:|:--|
+| original | before X/Y | broken | no | died 22.5k |
+| corpus control | **none** | broken | no | turned 17k |
+| grammar control | before X/Y | **fixed** | no | **died 6.3k** |
+| reordered | **after X/Y** | fixed | no | clean past 10k |
+| labels fixed | none | **fixed** | no | **clean to 21k** |
+| **normalised** | before X/Y | broken | **yes** | **clean to 25k, best loss** |
+
+Neither column alone predicts the outcome, because there were **two independent failures**
+happening at once, and each masked the other:
+
+**1. The grammar.** Placing the transition token before the coordinates leaves Y with about
+two possible values, so the decoder runs a full cross-attention pass to decide a sign bit and
+the attention degenerates. Fixed either by normalising the attention scores or by moving the
+token after the coordinates - the run that kept the old order on a clean corpus died at 6,300
+steps, the earliest failure of the whole series.
+
+**2. The corpus labels.** Imported community maps carried `starRating: 0.0` as a placeholder
+meaning "unrated" - but 0 is a real bucket, the *easiest* one, and those maps are the hardest
+material in the set: 10.7 notes per second against the ranked corpus's 6.8, and 1,788 notes
+against 738. So 29% of the training data was telling the difficulty control that zero stars
+means maximum density. Re-rating them from note geometry (median 5.02 stars) fixed a run that
+otherwise turned at 17,000 steps, changing nothing else.
+
+The attention fix is the stronger of the two. RMS-normalising the query and key vectors bounds
+the score by `sqrt(head_dim)` no matter how large the projections grow, and in training it
+holds exactly:
+
+| | cross-attention logits | best validation loss |
 |:--|:--:|:--:|
-| transition-token run | up to 490,194 | 2.2173 |
-| control run | up to 88,674 | - |
-| **with normalised attention** | **1.0 - 7.4** | **2.2221** |
+| original run | up to 1,245,475 | 2.1448, then degrading |
+| corpus control | up to 88,674 | 2.5007, then erratic |
+| **with normalised attention** | **7.5, flat** | **2.0842, still improving at 25k** |
 
-Same quality, no pathology, and not one gradient spike, rollback or guard trip in 15,000 steps.
-That run is still short of where the others failed, so it is promising rather than proven.
+Twenty-five thousand steps, zero rollbacks, zero guard trips, three skipped micro-batches, and
+gradient norms *falling* rather than climbing - while still training on the un-fixed corpus, so
+the result is conservative.
 
 > [!NOTE]
-> Two lessons worth keeping. First: a mechanism that explains every measurement is not the same
-> as the cause - only the control run could tell those apart, and it cost one training run to
-> find out. Second: this class of failure is invisible in the metrics people watch. Loss and
-> validation looked healthy while the attention scores grew five orders of magnitude, so six
-> different gradient-side guards fought symptoms for days.
+> Three lessons worth keeping. **A mechanism that explains every measurement is not the same as
+> the cause** - the first diagnosis fit every number and was still incomplete; only controls
+> separated them. **This class of failure is invisible in the metrics people watch** - loss and
+> validation looked healthy while attention scores grew five orders of magnitude, so six
+> gradient-side guards fought symptoms for days. And **a placeholder that is also a legal value
+> is a bug waiting to happen** - `0.0` meaning "unrated" silently became "easiest" the moment
+> something conditioned on it.
+
+> [!WARNING]
+> One thing this does **not** yet show: whether the transition token improves map quality. The
+> teacher-forced placement metric cannot answer it - that metric feeds the model the true prefix,
+> which for this grammar includes the transition token itself, handing it most of the answer.
+> Measured: knowing the token drops Y's entropy from 2.509 bits to 1.049. Any cross-grammar
+> comparison on that metric is unfair by construction, so the open question is being settled by
+> end-to-end generation instead.
 
 ## 🗺️ Roadmap
 
@@ -174,16 +210,19 @@ That run is still short of where the others failed, so it is promising rather th
 - [ ] **KV-cache decoding** for faster generation - the RoPE decoder is the groundwork
 - [x] **Coordinate-refinement head** - a regression sub-bin offset for beyond-grid precision
 - [x] **Rest/gap handling** - an inference-time onset gate so quiet sections stay empty
-- [x] **Explicit transition modelling** - built, and it produced the negative result above
-- [ ] **Normalised attention scores** - bounds the failure mode above; training now, unproven
+- [x] **Explicit transition modelling** - built; trains stably now, quality benefit unproven
+- [x] **Normalised attention scores** - fixes the failure above; 25k steps clean, best loss yet
+- [ ] **Corpus label audit as a gate** - the placeholder-rating bug should have been caught by a
+      check, not by a week of divergences
 
 > [!NOTE]
-> Three experiments have now failed to beat the v7 recipe, and each failed differently: **v8**
-> (architecture changes) reached its best validation loss at 63k steps and never improved past
-> it; **v9** (refreshed, larger corpus) peaked at 115k and then overfit monotonically; **v10**
-> (explicit transitions) destabilised, and the control run showed the transitions were not why.
-> On this corpus the ceiling has consistently looked like a data limit rather than an
-> architecture one - and the instability that looked architectural is still being traced.
+> Three experiments failed to beat the v7 recipe, each differently: **v8** (architecture changes)
+> reached its best validation loss at 63k steps and never improved; **v9** (refreshed, larger
+> corpus) peaked at 115k and then overfit; **v10** (explicit transitions) destabilised for the two
+> reasons above. Both of those are now fixed and the run is stable, so the open question is back
+> to the original one - whether any of it produces *better maps* than v7, which only end-to-end
+> generation can answer. On this corpus the ceiling has consistently looked like a data limit
+> rather than an architecture one.
 
 ## 🙏 Credits
 
