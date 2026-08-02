@@ -313,8 +313,8 @@ Two things survive the change:
 
 * **The one comparable channel.** The first token of each note group is emitted under both
   grammars, conditioned on the same note history, so its per-token loss *is* comparable.
-  Measured on the same held-out maps: champion **1.60**, this run **1.97** - i.e. this run
-  is currently *behind* on the only honest like-for-like number. That is unsurprising at a
+  Measured over the entire held-out set: champion **1.669**, this run **1.979** - i.e. this
+  run is currently *behind* on the only honest like-for-like number. That is unsurprising at a
   quarter of the training, and the comparison that decides anything is the matched one at
   300,000 steps, where the champion's own final checkpoint sits. It is now logged as a
   curve rather than saved for a single endpoint.
@@ -376,10 +376,22 @@ Three practical consequences, all of which changed the design:
   quality drift, and any gentle-looking slope should be assumed noise until it clears that
   bar.
 
-The same discipline applies to every metric here, not just this one: a per-token-class
-probe measured on a *fixed* checkpoint moved 8.7% purely with how many batches it sampled,
-and did not settle with more coverage - so it now consumes the entire held-out set every
-time rather than a sample of it.
+The same discipline applies to every metric here, not just this one - and the follow-up is
+the more useful half. A per-token-class probe measured on a *fixed* checkpoint moved 8.7%
+purely with how many batches it sampled (1.60 / 1.51 / 1.52 / 1.65 at 8 / 12 / 16 / 32
+batches), and crucially it did **not** settle with more coverage. The full held-out set
+gives **1.669** - outside that entire range, so the sampling was biased rather than merely
+noisy, and picking a batch size off a settling curve would have baked that bias in.
+
+The fix was to stop sampling. Dropping the per-class gradient attribution - which the
+trajectory does not need, and which is what made the probe expensive - left a forward-only
+pass cheap enough to run over the *complete* held-out set in 14 seconds. That has no
+sampling error at all, which is a better place to arrive than a carefully chosen sample
+size with a documented ±6%.
+
+The general form: when a measurement is noisy, the first question is whether it can be made
+*exhaustive* rather than better-sampled. Often the expensive part turns out to be something
+the question didn't require.
 
 ## 🗺️ Roadmap
 
