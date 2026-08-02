@@ -279,21 +279,52 @@ attention, the transition token kept, re-rated community maps, 200 further vette
 the gain spring added partway through. It is the first run of this line that has stayed
 healthy long enough to be compared against the champion rather than against its own failures.
 
-Validation loss against the same milestones, every earlier run measured on the same protocol:
+Validation loss against the milestones of the other runs that share its grammar:
 
-| step | this run | normalised arm | transition run | champion (v7) |
-|:--|:--:|:--:|:--:|:--:|
-| 20,000 | 2.1190 | - | 2.1448 *(its best, then degrading)* | - |
-| 25,000 | **2.0282** | 2.0842 | *dead* | 2.1450 |
-| 50,000 | **1.7883** | - | - | 1.9530 |
+| step | this run | normalised arm | transition run |
+|:--|:--:|:--:|:--:|
+| 20,000 | 2.1190 | - | 2.1448 *(its best, then degrading)* |
+| 25,000 | **2.0282** | 2.0842 | *dead* |
+| 50,000 | **1.7883** | - | - |
+| 75,000 | **1.7057** | - | - |
 
-It is ahead of every previous run at every step where they can be compared, and it passed the
-best loss the second-place run ever reached - which took that run 115,000 steps - at around
-45,000. The champion's own best was 1.7036, reached at 274,000 steps.
+Ahead of both, at every step where they can be compared.
 
-Generation quality is moving with it, on held-out songs the model never trained on: onset F1
-0.539 → 0.584 and pattern-mix 0.607 → 0.719 between 13k and 50k steps, with the share of
-physically implausible jumps falling from 4.0% to 2.6%.
+### Why the champion is missing from that table
+
+An earlier version of this section included the champion's column and reported this run as
+ahead of it too. **That comparison was invalid, and the error is worth writing down because
+it is the same one the transition token had already caused once.**
+
+Validation loss is mean cross-entropy **per token**. This run emits four tokens per note;
+the champion emits three. Adding a low-entropy token class lowers a per-token mean
+mechanically - and the transition token also makes the tokens *after* it cheaper, which is
+the entropy table from earlier in this document: knowing it drops Y from 2.509 bits to
+1.049. Rough arithmetic puts that at ~0.25 nats of free advantage. The gap being celebrated
+was 0.002. **The confound was two orders of magnitude larger than the effect, and it ran in
+the new model's favour.**
+
+There is no step at which this becomes valid. The grammar difference is permanent, so a
+four-token model can never be compared to a three-token one on per-token loss - not at
+100k, not at 300k. The metric everyone reaches for first is structurally unavailable for
+this architecture.
+
+Two things survive the change:
+
+* **The one comparable channel.** The first token of each note group is emitted under both
+  grammars, conditioned on the same note history, so its per-token loss *is* comparable.
+  Measured on the same held-out maps: champion **1.60**, this run **1.97** - i.e. this run
+  is currently *behind* on the only honest like-for-like number. That is unsurprising at a
+  quarter of the training, and the comparison that decides anything is the matched one at
+  300,000 steps, where the champion's own final checkpoint sits. It is now logged as a
+  curve rather than saved for a single endpoint.
+* **Free-running generation quality**, which is protocol-free by construction: it compares
+  finished maps against *human* maps rather than against another model, so neither the
+  grammar nor the training-length difference touches it.
+
+That reframes the measurement work in this project. It was never a detour around the real
+milestone - it built the only instruments that can answer the question, because the obvious
+one turns out not to apply here at all.
 
 > [!WARNING]
 > Those generation figures are **not** comparable to the evaluation table further up. That
@@ -301,7 +332,54 @@ physically implausible jumps falling from 4.0% to 2.6%.
 > two models here - the same checkpoint scores 0.445 or 0.568 depending on one flag. Compare a
 > run to itself over time, or re-run every model with byte-identical flags. Nothing else.
 
-Roughly a sixth of the way through its schedule, so still a trajectory rather than a result.
+Roughly a quarter of the way through its schedule, so still a trajectory rather than a result.
+
+### Measure what "no change at all" looks like first
+
+Building the free-running metric turned up something that invalidated a day of readings and
+is probably the most portable lesson here.
+
+Generation is **chaotic in the sampling seed**. One flipped token early in an
+autoregressive sample diverges everything after it. Holding the weights frozen, the song
+fixed, the difficulty fixed, and varying only the seed:
+
+| seed | median aim speed |
+|:--|:--:|
+| 1234 | 7.68 |
+| 1235 | 3.69 |
+| 1236 | 6.66 |
+| 1237 | 23.72 |
+
+Mean absolute pairwise difference **10.19**, against a human reference of 13.91. A single
+generation says almost nothing.
+
+That one measurement retired four separate conclusions drawn the same day - an apparent
+difficulty-conditioning inversion, an apparent checkpoint-to-checkpoint instability
+(differences of 6.69 and 8.91, both *inside* the noise), an apparent song-triggered failure
+mode, and a "the tail is compressed" verdict. Every one was an n=1 or n=2 reading of a
+process noisier than the effects being claimed. None of them could have been caught by
+being more careful about any individual reading; what was missing was a **null
+distribution**, and nobody had measured one.
+
+Three practical consequences, all of which changed the design:
+
+* **Match the estimator to the noise.** The aggregate is a median, so the matched spread is
+  a robust one (MAD), not the pooled figure - 2.96 against 9.03, a 3x difference in what
+  counts as significant. The four draws are a tight cluster plus one outlier, not a wide
+  spread.
+* **Do not discard outliers before a median.** A median of three tolerates one outlier by
+  construction; drop it first and you have a median of two, which is a mean. An
+  outlier-exclusion gate built earlier that day was removed for exactly this reason - it
+  degraded the robustness it was meant to protect.
+* **Know what the instrument cannot see.** At nine samples the resolvable difference is
+  roughly 20-25% of the reference. It detects large regressions. It cannot see gradual
+  quality drift, and any gentle-looking slope should be assumed noise until it clears that
+  bar.
+
+The same discipline applies to every metric here, not just this one: a per-token-class
+probe measured on a *fixed* checkpoint moved 8.7% purely with how many batches it sampled,
+and did not settle with more coverage - so it now consumes the entire held-out set every
+time rather than a sample of it.
 
 ## 🗺️ Roadmap
 
