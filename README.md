@@ -1,15 +1,35 @@
 <div align="center">
 
-# 🎵 Mappernorator
+<br>
 
-**Turn any song into a playable [Rhythia](https://www.rhythia.com) map.**
+# Mappernorator
 
-Drop in audio, get a `.rhm` / `.sspm` you can drag straight into the game.
+### Turn any song into a playable [Rhythia](https://www.rhythia.com) map
 
-![Status](https://img.shields.io/badge/status-work_in_progress-f5a623?style=flat-square)
-![Source](https://img.shields.io/badge/source-private-6e7681?style=flat-square)
-![Built with PyTorch](https://img.shields.io/badge/built_with-PyTorch-ee4c2c?style=flat-square&logo=pytorch&logoColor=white)
-![For Rhythia](https://img.shields.io/badge/for-Rhythia-8a2be2?style=flat-square)
+Drop in audio &nbsp;·&nbsp; get a `.rhm` / `.sspm` you can drag straight into the game
+
+<br>
+
+![Status](https://img.shields.io/badge/status-work_in_progress-E8A33D?style=for-the-badge&labelColor=1c1c22)
+![Source](https://img.shields.io/badge/source-private-6E7681?style=for-the-badge&labelColor=1c1c22)
+![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=for-the-badge&logo=pytorch&logoColor=white&labelColor=1c1c22)
+![Model](https://img.shields.io/badge/34.3M_params-8A2BE2?style=for-the-badge&labelColor=1c1c22)
+
+<br>
+
+**Jump to**
+
+[![What it does](https://img.shields.io/badge/What_it_does-1c1c22?style=for-the-badge)](#what-it-does)
+[![How it works](https://img.shields.io/badge/How_it_works-1c1c22?style=for-the-badge)](#how-it-works)
+[![Steering](https://img.shields.io/badge/Steering-1c1c22?style=for-the-badge)](#steerable-generation)
+[![Evaluation](https://img.shields.io/badge/Evaluation-1c1c22?style=for-the-badge)](#evaluation)
+
+[![Held-out results](https://img.shields.io/badge/Held--out_results-8A2BE2?style=for-the-badge)](#what-held-out-data-changed)
+[![Experiments](https://img.shields.io/badge/Experiments-1c1c22?style=for-the-badge)](#the-transition-token-experiment---a-negative-result-worth-writing-down)
+[![Measurement](https://img.shields.io/badge/Measurement-1c1c22?style=for-the-badge)](#measure-what-no-change-at-all-looks-like-first)
+[![Roadmap](https://img.shields.io/badge/Roadmap-1c1c22?style=for-the-badge)](#roadmap)
+
+<br>
 
 </div>
 
@@ -19,7 +39,7 @@ Drop in audio, get a `.rhm` / `.sspm` you can drag straight into the game.
 > **Work in progress - a personal research project.** The source code is not public and will
 > never be released, and it is not intended to be used to gain any advantage in Rhythia.
 
-## ✨ What it does
+## What it does
 
 A small Whisper-style encoder-decoder transformer (~34M parameters) reads the song's mel
 spectrogram and emits a stream of note events (`time`, `x`, `y` on the 3x3 grid). It is
@@ -32,7 +52,7 @@ desktop GUI.
 | **Preview** | Play the song and watch the notes fly in on a 3x3 grid; opens any `.rhm` / `.sspm` too. |
 | **Training** | A live loss chart and stats while a model trains. |
 
-## 🧠 How it works
+## How it works
 
 **Data.** Readers/writers for `.rhm` (a zip of `map` JSON + audio + cover) and `.sspm` (the
 SS+m v2 binary), with byte-verified round-trips and quantum-note support. A rhythia.com API
@@ -55,7 +75,7 @@ ranked maps.
 Streams, Stacks, Spins, Bursts, Vibros, Walls, Offgrid, Quantum, Stamina), threshold-calibrated
 against human labels. It feeds the conditioning model and a pattern-mix quality metric.
 
-## 🎛️ Steerable generation
+## Steerable generation
 
 Trained on ranked and legacy maps, the conditioning model makes generation steerable. Each
 window is prefixed with a control prompt the decoder always sees:
@@ -74,7 +94,7 @@ upgrades over the base model:
 - **Onset input channel** - the audio's onset-strength envelope is appended as an extra encoder
   channel, an explicit timing prior.
 
-## 📊 Evaluation
+## Evaluation
 
 Generated maps for held-out human songs are scored on onset **F1** (within 50 ms), grid-cell
 accuracy, note-density ratio, and **pattern-mix cosine** (does the map have a human-like blend
@@ -86,11 +106,72 @@ of skillsets).
 | v6 (shipping) | 0.70 | 1.17x | 0.75 |
 | v7 (scaled ~3x) | **0.75** | 1.11x | **0.80** |
 
-> [!NOTE]
-> v6's F1 is on the stricter frozen-test set; on a common held-out val set v6 and v7 land
-> about even. Note placement remains the hardest metric.
+> [!WARNING]
+> **These numbers cannot separate the models, and the table's ranking does not survive
+> held-out data.** Measured later: re-running one frozen checkpoint with only the sampling
+> seed changed moves onset F1 by a mean pairwise 0.033 and pattern-mix by 0.052. The
+> margin the table asserts between the top two is **0.006**. See below.
 
-## 🔬 The transition-token experiment - a negative result worth writing down
+## What held-out data changed
+
+Every model above was ranked on the **validation** split. That is also the split each
+checkpoint was *selected* on - training saves a checkpoint whenever validation improves.
+So the contest was being decided on the data used to pick the contestants.
+
+The project has always kept a frozen test third: 74 maps, never trained on, never used for
+checkpoint selection. It had never been used to compare placement. Scoring the same models
+on it inverts the result.
+
+| model | best-val step | validation | **held-out test** | drop |
+|:--|:--:|:--:|:--:|:--:|
+| shortest run *(the "failed" experiment)* | **63k** | 0.6389 | **0.5600** | -0.079 |
+| mid-length run *(shipping default)* | 500k | 0.6737 | 0.5397 | -0.134 |
+| longest-trained champion | 300k | **0.7015** | 0.5376 | **-0.164** |
+
+Read the last column. **The better a model looked on validation, the more it lost on data it
+had never seen** - and the model abandoned as a failure is the one that transfers best.
+
+Paired per-map, which is the honest test because positions inside one map are heavily
+correlated (same song, same mapper) so the effective sample size is 74 maps, not the 95,000
+scored positions:
+
+| comparison | mean difference | win rate | sign test |
+|:--|:--:|:--:|:--:|
+| champion vs shipping default | -0.0015 (0.4 SE) | 35/74 | p = 0.73 - **tied** |
+| champion vs the failed run | -0.0230 (4.6 SE) | 17/74 | **p < 0.001** |
+| shipping default vs the failed run | -0.0215 (3.7 SE) | 23/74 | **p = 0.002** |
+
+The win rate needs no variance assumption at all - under "no difference" it is a coin flip,
+and 17 of 74 is not a coin flip. The two models this project spent three generations ranking
+against each other are **statistically indistinguishable**, and the one it discarded beats
+both.
+
+The models are not failing in absolute terms. On the same held-out data a marginal predictor
+scores 0.115 and a 2nd-order Markov chain given the true previous positions scores 0.262, so
+all three sit at roughly **twice the Markov baseline**. They work. They are simply not
+distinguishable from one another, and the differences that looked real were selection.
+
+### The likeliest cause is not architecture
+
+The tempting story is that the discarded run's architecture won. The simpler one fits every
+row: it is the **shortest** run by a factor of five. Every checkpoint save is a
+validation-improvement event against a **36-map** split, so the 300k and 500k runs accumulated
+hundreds of selection events against a tiny set while the 63k run stopped early because it
+stopped improving. That needs no reference to architecture - and the discarded run changed
+three things at once, so a single comparison cannot attribute between them anyway.
+
+> [!NOTE]
+> This measures **placement under teacher forcing** - the model is given the true note history
+> and asked for the next position. It says nothing about free-running generation quality,
+> which is measured separately. A fourth model was dropped from the table entirely: its
+> training run began before the test split was frozen and resumed from those weights, so it
+> had seen the test maps.
+
+The practical consequence is that a long run can spend most of its compute getting better at
+the split it is scored on. The run in progress is now being tracked on held-out placement
+directly, to find out whether that is happening to it too.
+
+## The transition-token experiment - a negative result worth writing down
 
 One quality defect survived every model above: at 10-15 notes per second the generator jumps a
 median 2.05 grid units where humans compress to 1.00. The idea was to teach transitions
@@ -393,7 +474,7 @@ The general form: when a measurement is noisy, the first question is whether it 
 *exhaustive* rather than better-sampled. Often the expensive part turns out to be something
 the question didn't require.
 
-## 🗺️ Roadmap
+## Roadmap
 
 - [x] **RoPE positional embeddings** (custom decoder) - built and trained in the v8 experiment
 - [ ] **KV-cache decoding** for faster generation - the RoPE decoder is the groundwork
@@ -410,17 +491,22 @@ the question didn't require.
       champion
 
 > [!NOTE]
-> Three experiments failed to beat the v7 recipe, each differently: **v8** (architecture changes)
-> reached its best validation loss at 63k steps and never improved; **v9** (refreshed, larger
-> corpus) peaked at 115k and then overfit; **v10** (explicit transitions) destabilised for the two
-> reasons above. Both of those are now fixed, and the run built on those fixes is the first to
-> beat every one of them at matched steps - so the open question is back to the original one:
-> whether any of it produces *better maps*, which only end-to-end generation at convergence can
-> answer. On this corpus the ceiling has consistently looked like a data limit rather than an
-> architecture one, which is why the corpus repairs may end up mattering more than the
-> architecture work did.
+> Three experiments were recorded as failing to beat the v7 recipe: **v8** (architecture
+> changes) reached its best validation loss at 63k steps and never improved; **v9** (refreshed,
+> larger corpus) peaked at 115k and then overfit; **v10** (explicit transitions) destabilised
+> for the two reasons above.
+>
+> **The first of those verdicts did not survive held-out data** - v8 is the best placer of the
+> three on the frozen test set, and was retired on a validation number that inverted. See
+> [What held-out data changed](#what-held-out-data-changed). All three verdicts were reached
+> the same way, so the other two are worth re-checking on the same footing before they are
+> treated as settled.
+>
+> On this corpus the ceiling has consistently looked like a data limit rather than an
+> architecture one - and the held-out result sharpens that, because it suggests part of what
+> looked like architecture progress was selection against a 36-map split.
 
-## 🙏 Credits
+## Credits
 
 Rhythia by CAPO Games. Format details cross-checked against
 [rhmParse](https://github.com/yo-ru/rhmParse) and
