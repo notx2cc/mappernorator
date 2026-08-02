@@ -173,9 +173,9 @@ against 738. So 29% of the training data was telling the difficulty control that
 means maximum density. Re-rating them from note geometry (median 5.02 stars) fixed a run that
 otherwise turned at 17,000 steps, changing nothing else.
 
-The attention fix is the stronger of the two. RMS-normalising the query and key vectors bounds
-the score by `sqrt(head_dim)` no matter how large the projections grow, and in training it
-holds exactly:
+The attention fix is the stronger of the two. RMS-normalising the query and key vectors strips
+the magnitude out of the score no matter how large the projections grow, leaving a scale of
+about `sqrt(head_dim)`:
 
 | | cross-attention logits | best validation loss |
 |:--|:--:|:--:|
@@ -186,6 +186,48 @@ holds exactly:
 Twenty-five thousand steps, zero rollbacks, zero guard trips, three skipped micro-batches, and
 gradient norms *falling* rather than climbing - while still training on the un-fixed corpus, so
 the result is conservative.
+
+### The bound was not a bound
+
+`sqrt(head_dim)` is where those logits sit, but calling it a ceiling was wrong, and the full
+run caught it. Each normalised vector is multiplied by a small **learnable gain**, initialised
+at 1.0 - so the real limit is `sqrt(head_dim) x q_gain x k_gain`, and the gains are free to
+grow. Nothing pulled back on them, either: the optimizer's decoupled weight decay is applied
+only to matrices, and these gains are 1-D vectors, so they landed in the undecayed group by
+construction.
+
+They drifted. Over 50,000 steps the logits climbed 7.2 → 10.1 and the share of them sitting on
+Y positions went back from 6% to 84% - the same concentration that preceded the original
+blow-up. Reading the weights directly showed the drift was not diffuse but a single layer:
+
+| | mean gain | peak gain | that layer's ceiling |
+|:--|:--:|:--:|:--:|
+| all 16 gain tensors | 1.0041 | 1.3117 | - |
+| decoder layer 1 | - | **1.312** | 8 x 1.720 = **13.8** |
+| every other layer | - | 1.06 - 1.14 | 8.9 - 10.3 |
+
+Four orders of magnitude short of the original failure, with gradient norms still falling and
+validation still improving - so this was drift, not divergence. But it was drift with no
+restoring force, in the exact place the earlier failure began.
+
+The fix is a spring on the gains, and its direction matters: ordinary weight decay pulls a
+parameter toward **zero**, which for a multiplicative gain means flattening attention toward
+uniform. This pulls toward the **1.0 initialisation** instead, so it resists drift in both
+directions and does nothing at all while a gain sits where it started - which, at a mean of
+1.0041, is 15 of the 16 tensors. Applied outside the optimizer, so the optimizer's own state
+survives a resume untouched.
+
+Watching the peak gain move at last: it had risen monotonically for 15,000 steps, and reversed
+within 1,500 of the spring being switched on, while validation kept improving. The spring and
+the gradient balance rather than returning it to 1.0 - which is the point. The goal was to
+remove an unbounded direction, not to overrule what the model learned.
+
+> [!NOTE]
+> The lesson generalises past this project: **a normalisation with a learnable scale is not a
+> bound.** It is a bound on the *shape* and a free parameter on the *size*, and the second half
+> is easy to forget when the first half is what the technique is famous for. Worth checking
+> whether your regularizer actually reaches the parameter you think it does - the split that
+> decays matrices but not vectors is a near-universal default, and a learnable gain is a vector.
 
 > [!NOTE]
 > Three lessons worth keeping. **A mechanism that explains every measurement is not the same as
@@ -230,6 +272,37 @@ steering knob exists to trim.
 
 Both models are far from converged, so this is a direction rather than a verdict.
 
+### The production run
+
+Everything above then went into a single full run on the repaired corpus - normalised
+attention, the transition token kept, re-rated community maps, 200 further vetted maps, and
+the gain spring added partway through. It is the first run of this line that has stayed
+healthy long enough to be compared against the champion rather than against its own failures.
+
+Validation loss against the same milestones, every earlier run measured on the same protocol:
+
+| step | this run | normalised arm | transition run | champion (v7) |
+|:--|:--:|:--:|:--:|:--:|
+| 20,000 | 2.1190 | - | 2.1448 *(its best, then degrading)* | - |
+| 25,000 | **2.0282** | 2.0842 | *dead* | 2.1450 |
+| 50,000 | **1.7883** | - | - | 1.9530 |
+
+It is ahead of every previous run at every step where they can be compared, and it passed the
+best loss the second-place run ever reached - which took that run 115,000 steps - at around
+45,000. The champion's own best was 1.7036, reached at 274,000 steps.
+
+Generation quality is moving with it, on held-out songs the model never trained on: onset F1
+0.539 → 0.584 and pattern-mix 0.607 → 0.719 between 13k and 50k steps, with the share of
+physically implausible jumps falling from 4.0% to 2.6%.
+
+> [!WARNING]
+> Those generation figures are **not** comparable to the evaluation table further up. That
+> table uses a different protocol, and the difference is worth more than the gap between any
+> two models here - the same checkpoint scores 0.445 or 0.568 depending on one flag. Compare a
+> run to itself over time, or re-run every model with byte-identical flags. Nothing else.
+
+Roughly a sixth of the way through its schedule, so still a trajectory rather than a result.
+
 ## 🗺️ Roadmap
 
 - [x] **RoPE positional embeddings** (custom decoder) - built and trained in the v8 experiment
@@ -240,17 +313,22 @@ Both models are far from converged, so this is a direction rather than a verdict
 - [x] **Normalised attention scores** - fixes the failure above; 25k steps clean, best loss yet
 - [x] **Corpus label audit as a gate** - the screen that catches unplayable maps now runs as part
       of importing, instead of being something someone remembers to do
-- [ ] **A full run of the fixed recipe** - in progress; the first one that gets to answer whether
-      any of this beats the old champion
+- [x] **A restoring force on the learnable attention gains** - the half of the normalisation that
+      was never actually bounded
+- [ ] **A full run of the fixed recipe** - in progress and ahead of every previous run at every
+      comparable step; the first one that gets to answer whether any of this beats the old
+      champion
 
 > [!NOTE]
 > Three experiments failed to beat the v7 recipe, each differently: **v8** (architecture changes)
 > reached its best validation loss at 63k steps and never improved; **v9** (refreshed, larger
 > corpus) peaked at 115k and then overfit; **v10** (explicit transitions) destabilised for the two
-> reasons above. Both of those are now fixed and the run is stable, so the open question is back
-> to the original one - whether any of it produces *better maps* than v7, which only end-to-end
-> generation can answer. On this corpus the ceiling has consistently looked like a data limit
-> rather than an architecture one.
+> reasons above. Both of those are now fixed, and the run built on those fixes is the first to
+> beat every one of them at matched steps - so the open question is back to the original one:
+> whether any of it produces *better maps*, which only end-to-end generation at convergence can
+> answer. On this corpus the ceiling has consistently looked like a data limit rather than an
+> architecture one, which is why the corpus repairs may end up mattering more than the
+> architecture work did.
 
 ## 🙏 Credits
 
