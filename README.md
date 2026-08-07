@@ -27,6 +27,9 @@ Drop in audio &nbsp;·&nbsp; get a `.rhm` / `.sspm` you can drag straight into t
 [![Held-out results](https://img.shields.io/badge/Held--out_results-8A2BE2?style=for-the-badge)](#what-held-out-data-changed)
 [![Experiments](https://img.shields.io/badge/Experiments-1c1c22?style=for-the-badge)](#the-transition-token-experiment---a-negative-result-worth-writing-down)
 [![Measurement](https://img.shields.io/badge/Measurement-1c1c22?style=for-the-badge)](#measure-what-no-change-at-all-looks-like-first)
+
+[![Human ceiling](https://img.shields.io/badge/Human_ceiling-8A2BE2?style=for-the-badge)](#how-good-is-a-human)
+[![Split integrity](https://img.shields.io/badge/Split_integrity-1c1c22?style=for-the-badge)](#the-split-was-scoring-its-own-answer-key)
 [![Roadmap](https://img.shields.io/badge/Roadmap-1c1c22?style=for-the-badge)](#roadmap)
 
 <br>
@@ -93,6 +96,21 @@ upgrades over the base model:
   smoother spatial flow.
 - **Onset input channel** - the audio's onset-strength envelope is appended as an extra encoder
   channel, an explicit timing prior.
+
+> [!NOTE]
+> **A control the model is free to ignore is not a control.** The density knob turned out to be
+> a good example. Human density varies over a wide range; the model's output varies over about
+> a third of it (an elasticity of 0.35), and handing it the *true* density of the target window
+> moves that by 0.07 of an available 0.68. So the model is not mis-reading the token - it is
+> largely not using it, and no amount of prompt-side work fixes that.
+>
+> Two upstream bugs were found underneath it. The generator's nucleus sampling was applied to
+> `TIME` tokens as well as coordinates, and because rests live in the tail of the time
+> distribution, truncating the tail **deleted the rests** - the density defect was partly a
+> sampling bug, not a modelling one. And the density vocabulary's top bucket was open-ended:
+> it held the largest single share of training windows and spanned a ~72 notes-per-second
+> range in one token, so the control was structurally unable to steer the densest fifth of the
+> corpus. Both are fixed; the vocabulary change is what the current run is testing.
 
 ## Evaluation
 
@@ -368,8 +386,20 @@ Validation loss against the milestones of the other runs that share its grammar:
 | 25,000 | **2.0282** | 2.0842 | *dead* |
 | 50,000 | **1.7883** | - | - |
 | 75,000 | **1.7057** | - | - |
+| 142,000 | **1.6503** *(its best)* | - | - |
 
-Ahead of both, at every step where they can be compared.
+Ahead of both, at every step where they can be compared. It reached its validation optimum at
+step 142,000 and did not improve after that.
+
+> [!NOTE]
+> **The checkpoint at that optimum was very nearly lost.** A training run overwrites one
+> "best" file every time validation improves, so by default it keeps no history at all - the
+> weights that were best at 142,000 survived only because someone happened to copy them. An
+> archiver now bins checkpoints by step and always keeps a new validation minimum. Its first
+> version had the same defect in miniature: a fallback meant to keep sampling during a
+> plateau ran *before* the new-minimum check, so at exactly the interesting step it hijacked
+> the invocation and archived the wrong weights. The fallback preempted the thing it existed
+> to protect. Order of checks, not just their presence, was the whole fix.
 
 ### Why the champion is missing from that table
 
@@ -393,12 +423,12 @@ this architecture.
 Two things survive the change:
 
 * **The one comparable channel.** The first token of each note group is emitted under both
-  grammars, conditioned on the same note history, so its per-token loss *is* comparable.
-  Measured over the entire held-out set: champion **1.669**, this run **1.979** - i.e. this
-  run is currently *behind* on the only honest like-for-like number. That is unsurprising at a
-  quarter of the training, and the comparison that decides anything is the matched one at
-  300,000 steps, where the champion's own final checkpoint sits. It is now logged as a
-  curve rather than saved for a single endpoint.
+  grammars, conditioned on the same note history, so its per-token loss *is* comparable. It is
+  now logged as a curve rather than saved for a single endpoint. The champion's anchor on that
+  channel was originally recorded as **1.669** - a number this document published, and which
+  has since been corrected twice. It is **1.659515** once the probe stopped deriving its own
+  split, and it is **not currently usable at all** once exposure is accounted for. Both
+  corrections are below.
 * **Free-running generation quality**, which is protocol-free by construction: it compares
   finished maps against *human* maps rather than against another model, so neither the
   grammar nor the training-length difference touches it.
@@ -412,8 +442,6 @@ one turns out not to apply here at all.
 > table uses a different protocol, and the difference is worth more than the gap between any
 > two models here - the same checkpoint scores 0.445 or 0.568 depending on one flag. Compare a
 > run to itself over time, or re-run every model with byte-identical flags. Nothing else.
-
-Roughly a quarter of the way through its schedule, so still a trajectory rather than a result.
 
 ### Measure what "no change at all" looks like first
 
@@ -461,7 +489,7 @@ The same discipline applies to every metric here, not just this one - and the fo
 the more useful half. A per-token-class probe measured on a *fixed* checkpoint moved 8.7%
 purely with how many batches it sampled (1.60 / 1.51 / 1.52 / 1.65 at 8 / 12 / 16 / 32
 batches), and crucially it did **not** settle with more coverage. The full held-out set
-gives **1.669** - outside that entire range, so the sampling was biased rather than merely
+gives a figure *outside* that entire range, so the sampling was biased rather than merely
 noisy, and picking a batch size off a settling curve would have baked that bias in.
 
 The fix was to stop sampling. Dropping the per-class gradient attribution - which the
@@ -473,6 +501,211 @@ size with a documented ±6%.
 The general form: when a measurement is noisy, the first question is whether it can be made
 *exhaustive* rather than better-sampled. Often the expensive part turns out to be something
 the question didn't require.
+
+### A median cannot see a spread
+
+A related trap, from the same family. One knob was tuned by watching a quality metric's
+median across a set of generated maps, and the median walked cleanly from 0.50 to 0.00 -
+which reads as the defect being eliminated. It was not. **Not one map crossed 0.05.** The
+human distribution for that metric is mostly-zero with a long tail, and the knob was only
+relocating the mode of a distribution whose shape never changed.
+
+A median is a location statistic. If the thing you care about is a shape - "most maps clean,
+a few extreme" - it cannot see it, and it will report success while the population is
+untouched. Every such metric here now reports the fraction below threshold and the
+between-map spread beside the median, because those are the numbers the claim was actually
+about.
+
+## How good is a human?
+
+Every quality number above is "how close is the model to *this one* human chart". Nobody had
+asked what score a *second human* gets on that test. Measured over 57 star-matched pairs of
+charts of the same song by different mappers, scored with exactly the same code:
+
+| metric | two humans, same song | unrelated songs | seed noise on a frozen model |
+|:--|:--:|:--:|:--:|
+| onset F1 | **0.6869** ±0.0308 | 0.3164 | 0.0247 |
+| pattern-mix | **0.8726** ±0.0204 | 0.8271 | 0.0518 |
+| density ratio | 1.216 (p90 1.905) | - | not measured |
+
+Three things fell out of that table, and all three changed what the project optimises.
+
+**The target was set above the ceiling.** The dashboard carried an aspirational band of
+0.80-1.00 for onset F1. Two humans score 0.6869. The goal had been asking the model to match
+one human chart *better than another human does*, and nobody had checked it was reachable -
+it was not. A model sitting at the human line is at the ceiling of what the metric can ask
+for, not 0.14 short of a target.
+
+**One metric cannot rank anything.** Pattern-mix spans 0.8271 (unrelated songs) to 0.8726
+(two humans) - a usable band of **0.0455**. The seed noise of a single frozen checkpoint on
+that metric is **0.0518**. The instrument's own jitter is wider than the entire range it is
+supposed to resolve, so it cannot order two models, ever. It is kept as a within-run trend
+and is never coloured on the dashboard.
+
+**And one metric has no human ceiling at all.** Grid-cell placement accuracy had been treated
+as a headline number for three model generations - one architecture change was built
+specifically to attack it. But two competent mappers, given the same song at matched
+difficulty, agree on the cell only 0.349 of the time against a marginal-chance baseline of
+0.338. That is a kappa of about 0.017: **two humans agree with each other essentially at
+chance.** There is no signal in the metric to recover, so a model scoring "badly" on it is
+not making a mistake - it is being scored on a question with no agreed answer. The tile still
+exists on the dashboard for continuity, permanently uncoloured, and the optimisation target
+moved to distributional similarity instead.
+
+> [!NOTE]
+> The portable version: **before optimising a similarity metric, measure what two ground
+> truths score against each other.** It tells you the ceiling, the floor, and - compared
+> against your instrument's own noise - whether the metric can rank anything at all. Three of
+> the five headline numbers here failed at least one of those checks, and one failed all
+> three. None of that is visible from the metric's own value.
+
+## The split was scoring its own answer key
+
+The held-out result further up rests entirely on one property: that the frozen test maps were
+never trained on and never selected on. Auditing that assumption produced two failures, and
+the second is worse than the first.
+
+### Deriving a split is not a near-miss for reading one
+
+The split is produced by a deterministic function of the *sorted list of corpus files*, so it
+is stable only while the corpus is. The corpus grows. By the time it was checked, the split
+that function returned shared **8 of the frozen 74 maps - 11%**.
+
+Some tools read the frozen list from disk; others re-derived it. Both look identical in code
+review, both run without error, and they answer different questions under the same name. The
+consequences were not symmetric:
+
+* A probe running **every ten minutes** was drawing 6 of its 42 "validation" maps from the
+  frozen test set - spending the neutrality of 8% of the held-out split on a routine monitor.
+* A generation eval feeding the dashboard's quality trend was selecting 2 of its 6 songs from
+  frozen-test maps, every ten minutes.
+* Nothing leaked into *training* - validation and test are both held out - so the losses were
+  honest. The harm was that "validation" meant two different things in one codebase.
+
+Correcting it **moved the shipping criterion by 0.054 nats**, a 41% understatement, because
+the six contaminated maps happened to be easy for one model and hard for the other. The
+project's primary anchor number changed from 1.669017 to 1.659515 as a result.
+
+> [!WARNING]
+> **Grepping for "does it read the frozen file" is not a sufficient audit.** One tool passed
+> that check and was still contaminated: it applied the frozen list on one code path and not
+> on the other, so one command-line flag returned a derived split untouched. Another bound the
+> derived value into a variable that nothing happened to read - wrong, and harmless only by
+> accident. Check every *branch* and every *variable*, not whether the filename appears.
+>
+> The structural fix was to make the split come from exactly one place, which raises rather
+> than derives when the frozen file is missing, plus a test that fails if any new script
+> imports the underlying function at all. That turns the class of bug from "fixed" into
+> unreachable, which is the only kind of fix worth the name here.
+
+### Freezing a split does not fix what already leaked
+
+The deeper problem is that the same property - the split being a function of the corpus
+listing - means a **finished** run's validation cut is unrecoverable. It cannot be
+reconstructed from the run, and today's cut is a different set of maps.
+
+So the older models in every table above were being scored on maps that had been in their own
+*training* sets. Measured from raw file dates: **31 of the 36 validation maps predate one
+champion's finish, and 34 predate the other's.** Those comparisons are skill plus
+memorisation, mixed, with no way to separate them after the fact - except by
+difference-in-differences against a model that provably never saw them:
+
+| model | all 36 maps | the maps clean for it | difference-in-differences |
+|:--|:--:|:--:|:--:|
+| older champion | -0.0947 *(champion better)* | **+0.2016** *(newer better)*, n=4, 4/4 | -0.336, CI [-0.466, -0.212] |
+
+**The sign reverses on the clean subset**, and that model's own clean-versus-exposed spread is
+3.8x the control's - which is the memorisation signature the hypothesis predicts. At n=4 this
+is suggestive rather than settled, but it is enough to move the recorded gap from *imprecise*
+to **unresolved**: it is no longer cited as a decision input.
+
+Freezing the validation split fixes the *future* of this problem. It was tempting to write
+that the next comparison would therefore be honest, since both models would be scored through
+one frozen split - and that is **wrong**, which is worth stating plainly because it was
+written down before it was checked. Freezing stops future drift. It says nothing about past
+exposure:
+
+| the frozen validation split today | 117 maps |
+|:--|:--:|
+| were in the previous run's **training** set | **79 (68%)** |
+| were in its validation set | 11 |
+| never seen by it | 27 |
+
+Reconstructing the earlier run's split by re-deriving it over the corpus *as it stood at that
+run's start* recovers that run's documented 672/36 split exactly, so the reconstruction is
+faithful rather than approximate. Scoring the old model there flatters it: a win for the new
+model would be conservative, but a win for the old one is uninterpretable.
+
+The usable subset is frozen separately - 38 maps never in the previous run's training set, 27
+never in its training *or* validation set (so clean for a selection comparison too), and both
+are audio-clean at the song-group level, since difficulty variants of one song share an audio
+file and would otherwise leak the encoder's input. The 117 is for within-run trajectory; only
+that subset is for cross-run claims.
+
+> [!NOTE]
+> A related, quieter bug from the same work. Applying a frozen list is a *filter* - keep the
+> files whose id is in the list. If a map ever leaves the corpus, the filter silently returns
+> a smaller split while the frozen file still records the original count, so the record and
+> the measurement disagree from that moment on with no error and no log line. It now raises.
+>
+> Reclaiming maps that the split function had assigned to no split at all - 77 of 859, 9% of
+> the ranked corpus, neither trained on nor evaluated - is what took validation from 36 maps
+> to 117. A 36-map validation set had been selecting checkpoints for a 3,800-map run.
+
+## The same confound came back, three times larger
+
+The current run changes the coordinate objective: the Gaussian over neighbouring bins is
+narrowed and truncated, which is a better training target. It also has a side effect that is
+easy to miss.
+
+**A soft target's own entropy is the cross-entropy floor.** Narrowing the target lowers the
+loss the model would achieve if it were *perfect*, so the number's zero point moves. Measured
+on the applied code:
+
+| | coordinate-token loss floor |
+|:--|:--:|
+| previous runs (wide target) | 1.4189 nats |
+| current run (narrow, truncated) | 0.0336 nats |
+| **drop** | **1.3853 per coordinate token → 0.6927 per token** |
+
+Two of the four tokens per note are coordinates, so the current run starts **~0.69 nats below
+its predecessor before it has learned anything.** Milestone-to-milestone gaps in this project
+run about 0.002. That is a **350x confound**, and 2.8x larger than the four-versus-three-token
+grammar advantage that had already invalidated one comparison in this document.
+
+What it does and does not break is worth being precise about, because "the metric is
+confounded" is not the same as "the metric is useless":
+
+| reading | status | why |
+|:--|:--:|:--|
+| checkpoint selection within the run | **safe** | the floor is a constant offset; the ordering is unchanged |
+| the train-minus-validation **gap** | **safe** | training pays the same floor, so it cancels in a difference |
+| absolute validation, versus any earlier run | **fatal** | the ~0.69 offset is entirely in the new run's favour |
+| structural-token loss | **immune** | those tokens never touch the coordinate objective |
+
+So the one channel that survives an objective change is the same one that survived the grammar
+change, for the same reason - it is the part of the loss the change does not reach.
+
+> [!NOTE]
+> The general lesson, now demonstrated twice by two unrelated causes: **a per-token loss is
+> only comparable between models that emit the same tokens under the same objective.** Both
+> times the confound ran in the newer model's favour, both times it was two to three orders of
+> magnitude larger than the effect being claimed, and both times the number looked completely
+> ordinary. The defence is not vigilance - it is identifying, before the run starts, which
+> channel the change cannot reach, and reading that one.
+>
+> This run changes three things at once (objective, split, and density vocabulary), so
+> attribution from validation loss is not merely unclean - validation cannot rank it against
+> its predecessor at all.
+
+> [!NOTE]
+> One more from the same audit, filed under *build the consumer before the producer*. The
+> conditioning model had been trained from the start with heavy prompt dropout, which is the
+> standard way to train the unconditional branch that classifier-free guidance needs. Guidance
+> itself was never built, so for every run in this document that branch was trained and never
+> called - the cost was paid and the capability was never available. It exists now, and is
+> bit-identical to the historical path at a guidance weight of 1, which is the property that
+> makes it safe to switch on mid-project.
 
 ## Roadmap
 
@@ -486,9 +719,19 @@ the question didn't require.
       of importing, instead of being something someone remembers to do
 - [x] **A restoring force on the learnable attention gains** - the half of the normalisation that
       was never actually bounded
-- [ ] **A full run of the fixed recipe** - in progress and ahead of every previous run at every
-      comparable step; the first one that gets to answer whether any of this beats the old
-      champion
+- [x] **A full run of the fixed recipe** - reached its validation optimum at 142k steps, ahead of
+      every previous run at every comparable step
+- [x] **Human-ceiling study** - what a second human scores on each quality metric, which retired
+      one target as unreachable and one metric as unrankable
+- [x] **One source of truth for the data split** - reading rather than deriving, a frozen
+      validation list, and a test that makes the old bug unreachable
+- [x] **Classifier-free guidance** - the unconditional branch had been trained since the first
+      conditioning run and had never had a consumer
+- [ ] **A run on the corrected objective** - in progress; a narrowed coordinate target, the
+      frozen 117-map validation split, and a density vocabulary that can actually reach the
+      densest fifth of the corpus
+- [ ] **Settle the shipping decision on a channel that survives all of it** - structural-token
+      loss on the maps the previous run never saw, plus free-running texture
 
 > [!NOTE]
 > Three experiments were recorded as failing to beat the v7 recipe: **v8** (architecture
@@ -505,6 +748,14 @@ the question didn't require.
 > On this corpus the ceiling has consistently looked like a data limit rather than an
 > architecture one - and the held-out result sharpens that, because it suggests part of what
 > looked like architecture progress was selection against a 36-map split.
+
+> [!IMPORTANT]
+> **Nothing in this document currently establishes that any model beats the v7 recipe.** The
+> anchor that would decide it was measured on a contaminated split, corrected, and then found
+> to be exposure-confounded as well; the obvious alternative - per-token validation loss - is
+> unavailable across both a grammar change and an objective change. That is an honest
+> unresolved, not a pending formality, and resolving it is the current priority rather than
+> training anything new.
 
 ## Credits
 
